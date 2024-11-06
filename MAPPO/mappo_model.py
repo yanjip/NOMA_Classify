@@ -116,10 +116,17 @@ class Critic_MLP(nn.Module):
 
 def gaussian_likelihood(x, mu, log_std):
     pre_sum = -0.5 * (((x - mu) / (torch.exp(log_std) + 1e-8)).pow(2) + 2 * log_std + np.log(2 * np.pi))
-    likelihood = pre_sum.sum(dim=1).view(-1, 1)
+    # likelihood = pre_sum.sum(dim=1).view(-1, 1)
+    likelihood = pre_sum.view(-1, 1)
+    # likelihood = pre_sum
     return likelihood
 class MAPPO_agent:
     def __init__(self, args):
+        seed = para.seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.N = args.N
         self.action_dim = args.action_dim
@@ -227,13 +234,14 @@ class MAPPO_agent:
             if self.use_adv_norm:  # Trick 1: advantage normalization
                 adv = ((adv - adv.mean()) / (adv.std() + 1e-5))
 
+        adv=adv.to(self.device)
         """
             Get actor_inputs and critic_inputs
             actor_inputs.shape=(batch_size, max_episode_len, N, actor_input_dim)
             critic_inputs.shape=(batch_size, max_episode_len, N, critic_input_dim)
         """
         actor_inputs, critic_inputs = self.get_inputs(batch)
-
+        parameter_a_loss_list=[]
         # Optimize policy for K epochs:
         for _ in range(self.K_epochs):
             for index in BatchSampler(SequentialSampler(range(self.batch_size)), self.mini_batch_size, False):
@@ -259,26 +267,46 @@ class MAPPO_agent:
                     probs_now = torch.stack(probs_now, dim=1)
                     values_now = torch.stack(values_now, dim=1)
                 else:
-                    probs_now = self.actor(actor_inputs[index])
-                    values_now = self.critic(critic_inputs[index]).squeeze(-1)
-                # ---------------下面这行改过---------------
-                # probs_now = probs_now / probs_now.sum(dim=-1, keepdim=True)
-                dist_now = Categorical(probs_now)
-                dist_entropy = dist_now.entropy()  # dist_entropy.shape=(mini_batch_size, episode_limit, N)
-                # batch['a_n'][index].shape=(mini_batch_size, episode_limit, N)
-                # a/b=exp(log(a)-log(b))
-                # try:
-                # print(batch['a_n'][index])
-                # valid_values = batch['a_n'][index].clamp(min=0, max=7)
-                # a_logprob_n_now = dist_now.log_prob(valid_values)  # a_logprob_n_now.shape=(mini_batch_size, episode_limit, N)
-                a_logprob_n_now = dist_now.log_prob(batch['a_n'][index])  # a_logprob_n_now.shape=(mini_batch_size, episode_limit, N)
-                # except Exception as err:
-                #     print(batch['a_n'][index])
-                #     print(err)
-                ratios = torch.exp(a_logprob_n_now - batch['a_logprob_n'][index].detach())  # ratios.shape=(mini_batch_size, episode_limit, N)
-                surr1 = ratios * adv[index]
-                surr2 = torch.clamp(ratios, 1 - self.epsilon, 1 + self.epsilon) * adv[index]
-                actor_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
+                    # probs_now = self.actor(actor_inputs[index])
+                    # values_now = self.critic(critic_inputs[index]).squeeze(-1)
+                    pass
+                values_now = self.critic(critic_inputs[index]).squeeze(-1)
+                mu, std, parameter_log_std = self.actor(actor_inputs[index])
+                action,log_a=batch['a_n'][index],batch['a_logprob_n'][index]
+                # action=self.change_dim(action)
+                # log_a=self.change_dim(log_a)
+                # mu=self.change_dim(mu)
+                parameter_logp = gaussian_likelihood(action, mu, parameter_log_std).to(self.device)
+                parameter_logp_olds = torch.FloatTensor(log_a).to(self.device)
+                parameter_logp_olds = parameter_logp_olds.view(-1, 1)
+                # parameter_logp_olds=parameter_logp_olds.view(-1,1)
+                parameter_ratio = torch.exp(parameter_logp - parameter_logp_olds)
+                # print("parameter_ratio",parameter_ratio)
+                parameter_ratio=parameter_ratio.view(3,-1)
+                # parameter_a_loss=torch.empty(320,1).to(self.device)
+                parameter_a_loss=torch.zeros(para.action_dim,1).to(self.device)
+                for i in range(para.action_dim):
+                    parameter_L1 = parameter_ratio[i].view(-1, 1) * adv[index].view(-1, 1)
+                    parameter_L2 = torch.clamp(parameter_ratio[i].view(-1, 1), 1 -self.epsilon, 1 + self.epsilon) * adv[index].view(-1,1)
+                    parameter_a_loss[i] = -torch.min(parameter_L1, parameter_L2).mean()
+                    parameter_a_loss_list.append(parameter_a_loss.cpu().data.numpy())
+
+                # parameter_L1 = parameter_ratio * adv[index].view(-1,1)
+                # parameter_L2 = torch.clamp(parameter_ratio, 1 -self.epsilon, 1 + self.epsilon) * adv[index].view(-1,1)
+                # parameter_a_loss = -torch.min(parameter_L1, parameter_L2).mean()
+                # parameter_a_loss_list.append(parameter_a_loss.cpu().data.numpy())
+                actor_loss=parameter_a_loss
+
+
+                # dist_now = Categorical(probs_now)
+                # dist_entropy = dist_now.entropy()  # dist_entropy.shape=(mini_batch_size, episode_limit, N)
+                #
+                # a_logprob_n_now = dist_now.log_prob(batch['a_n'][index])  # a_logprob_n_now.shape=(mini_batch_size, episode_limit, N)
+                #
+                # ratios = torch.exp(a_logprob_n_now - batch['a_logprob_n'][index].detach())  # ratios.shape=(mini_batch_size, episode_limit, N)
+                # surr1 = ratios * adv[index]
+                # surr2 = torch.clamp(ratios, 1 - self.epsilon, 1 + self.epsilon) * adv[index]
+                # actor_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
 
                 if self.use_value_clip:
                     values_old = batch["v_n"][index, :-1].detach()
@@ -289,6 +317,7 @@ class MAPPO_agent:
                     critic_loss = (values_now - v_target[index]) ** 2
 
                 self.ac_optimizer.zero_grad()
+                critic_loss=critic_loss.view(-1,1)
                 ac_loss = actor_loss.mean() + critic_loss.mean()
                 ac_loss.backward()
                 if self.use_grad_clip:  # Trick 7: Gradient clip
@@ -297,7 +326,9 @@ class MAPPO_agent:
 
         if self.use_lr_decay:
             self.lr_decay(total_steps)
-
+    def change_dim(self,x):
+        a, b, c, d = x.size()
+        return x.view(a*b,c,d)
     def lr_decay(self, total_steps):  # Trick 6: learning rate Decay
         lr_now = self.lr * (1 - total_steps / self.max_train_steps)
         for p in self.ac_optimizer.param_groups:

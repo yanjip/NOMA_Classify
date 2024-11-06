@@ -3,20 +3,29 @@
 import numpy as np
 KHz=1e3
 MHz=1e6
-
+seed=10
+np.random.seed(seed)
 N=4 # 基站数量
-K=10 # 用户数量
-p_max=0.2
+K=16 # 用户数量
+p_max=np.maximum(0.1,np.random.normal(0.1,2,K))
+max_action=1
+Ws=np.random.choice(np.array([1,2,3,4,5])+4,size=N)*MHz
 
-Ws=np.random.choice(np.array([1,2,3,4,5])*MHz,size=N)
-num_videos=15  # 一共有15份视频
-cachelen=6  # 每个基站的视频存储长度
-state_dim =5    # 自己基站的视频缓存（设定所有基站共享视频，但有时延）、每个视频的请求热度（Zipf给出，用户按照这个概率请求视频）、
-action_dim=3   # 功率、调度决策、SCR
-d0=5e6
-t_max=0.08
+state_dim =2*N    # 所有基站对用户k的信道增益、 interference
+action_dim=2   # 功率、调度决策、SCR
+output_dims=[N,10]
+d0=6e6
+t_max=0.15
+Prob_th=0.98
 sigma2=6e-12
-ACC=0.8  # 后面再改
+N0 = 3.981e-21  #-174dBm==3.981e-21
+# N0 = 3.981e-18  #-174dBm==3.981e-21
+
+W_n=1
+SCRs=[]  # 0-9的索引整数
+scr_range=np.arange(0.1,1.1,0.1)
+# ACC=0.8  # 后面再改
+fit_params=np.load('fit_params.npy')
 def Succe_Prob(power,ratio,lar_fad,W,interfence):
     phy=d0/(W*t_max)
     # xi=power/(N0_dBm*W)
@@ -28,32 +37,21 @@ def Succe_Prob(power,ratio,lar_fad,W,interfence):
     else: prob=0
     return prob
 
-def get_hot():
-    h=np.random.uniform(0.1,0.9,size=num_videos)
-    nor_hot=h/sum(h)
-    return nor_hot
+
 
 a=1.8
-def get_hot_zipf():
-    # 生成Zipf分布的概率
-    # a =1.8  # Zipf分布的参数，可以调整   2.5
-    zipf_probs = np.random.zipf(a, num_videos)
-    # 归一化概率，使其总和为1
-    zipf_probs_normalized = zipf_probs / np.sum(zipf_probs)
-    # 打印生成的概率
-    # print("生成的Zipf分布概率：", zipf_probs_normalized)
-    return zipf_probs_normalized
 
-def ini_video():
-    videos_c=[]
-    for i in range(3):
-        video_cache = np.random.choice(np.arange(num_videos), size=cachelen, replace=False)
-        videos_c.append(video_cache)
-    all_video_hot = get_hot_zipf()
 
-    return videos_c,all_video_hot
-
-videos_c,all_video_hot=ini_video()
+# def ini_video():
+#     videos_c=[]
+#     for i in range(3):
+#         video_cache = np.random.choice(np.arange(num_videos), size=cachelen, replace=False)
+#         videos_c.append(video_cache)
+#     all_video_hot = get_hot_zipf()
+#
+#     return videos_c,all_video_hot
+#
+# videos_c,all_video_hot=ini_video()
 
 train=True
 test_times=40
@@ -70,8 +68,20 @@ def get_small_fading():
     return h
 large_fading=get_large_fading()
 h=get_small_fading()
+H=np.sort(large_fading*h, axis=1)
+h=H/large_fading
 
+
+
+def dBm2wat(power_dbm):
+    power_watt = np.power(10, (power_dbm - 30) / 10)
+    return power_watt
+def wat2dBm(power_watt):
+    power_dbm = 30 + 10 * np.log10(power_watt)
+    return power_dbm
 if __name__ == '__main__':
-
-    (get_hot_zipf())
-
+    print(H)
+    # (get_hot_zipf())
+    print(len(fit_params))
+    print(dBm2wat(-174))
+    pass

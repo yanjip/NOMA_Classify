@@ -2,30 +2,38 @@
 # author: YanJP
 import numpy as np
 import para
-
+import fitting
+import PA_func
 class Basestation():
     def __init__(self,id):
         self.id=id
-        self.user_set=[]
         self.W=para.Ws[id]
         self.interference=0
+        self.H=para.H[id]
         self.large_h=para.large_fading[id]
         self.small_h=para.h[id]
+        self.UDs=[]
+    def get_power(self,):
+        int_arr = self.UDs[:,0].astype(int)
+        Hs= self.H[int_arr]
+        para.SCRs=self.UDs[:,1].astype(int)
+        pmins=self.UDs[:,2]
+        ps,acc=PA_func.PA_algor(Hs,pmins,para.p_max[int_arr])
+        return ps,acc
 
     def get_ini_obs(self,k):
         H=self.large_h[k]*self.small_h[k]
         self.obs=np.array([self.W/1e6,self.interference,self.large_h[k],self.small_h[k],H])
         # self.obs=np.concatenate((self.interference,self.large_h[k],self.small_h[k],H),axis=0)
         return self.obs
-    def get_next_obs(self,action):
-        if np.isin(action, self.video_cache):
-            self.obs = np.concatenate((self.all_video_hot, self.dummy_video_cache), axis=0)
-            # self.obs = self.dummy_video_cache
-            # self.get_dummy()
-            return self.obs  #下一个状态
-        self.obs=np.concatenate((self.all_video_hot,self.dummy_video_cache),axis=0)
-        return self.obs
 
+def reset_env():
+    para.large_fading = para.get_large_fading()
+    h = para.get_small_fading()
+    para.H = np.sort(para.large_fading * h, axis=1)
+    para.h = para.H / para.large_fading
+    para.p_max = np.maximum(0.1, np.random.normal(0.1, 2, para.K))
+    para.Ws = np.random.choice(np.array([1, 2, 3, 4, 5]) + 4, size=para.N) * para.MHz
 
 class env_():
     def __init__(self):
@@ -35,6 +43,8 @@ class env_():
         # self.UserAll=trans.generateU()
         self.reward=0
         self._max_episode_steps=para.K
+        self.BSs= [Basestation(i) for i in range(para.N)]
+        self.ACCs=np.zeros(para.K)
         # self.h=para.h
         # self.min_simis=para.min_sims
         # self.salency=para.salency
@@ -43,48 +53,83 @@ class env_():
     def get_all_obs(self,k):
         obs=[]
         for n in range(para.N):
-            obs.append(self.BSs[n].get_ini_obs(k))
+            obs.append(self.BSs[n].H[k]*1e6)
+        for n in range(para.N):
+            obs.append(self.BSs[n].interference*1e6)
         return np.array(obs)
 
     def reset(self,):
-        self.BSs= [Basestation(i) for i in range(para.N)]
-        self.done=[0]*para.N
         self.k=0
-        obs=self.get_all_obs(self.k)
-        return obs
+        self.done=False
+        reset_env()
+        self.BSs= [Basestation(i) for i in range(para.N)]
 
-    def deal_each_bs(self,bs_id,power,SCR):
-        self.BSs[bs_id].user_set.append(self.k)
-        power*=para.p_max
-        SCR=round(SCR*10)/10
-        ACC=para.ACC*SCR
-        lar_fad=self.BSs[bs_id].large_h[self.k]
-        sinr=lar_fad* self.BSs[bs_id].small_h[self.k]/(self.BSs[bs_id].interference+para.sigma2)
+        # for n in range(para.N):
+        #     self.BSs[n].interference=0
+        #     self.BSs[n].UDs=[]
+        obs=self.get_all_obs(self.k)
+        self.ACCs=np.zeros(para.K)
+        self.final_ps=np.zeros(para.K)
+        return obs
+    def get_pmin(self,SCR,bs_id):
+        lar_fad = self.BSs[bs_id].large_h[self.k]
+        delta = 1
+        interfence_k=self.BSs[bs_id].interference+para.N0*self.BSs[bs_id].W
+        phy_k = para.d0 / (self.BSs[bs_id].W * para.t_max)
+        pmin=interfence_k*(2**(phy_k*SCR)-1)/(lar_fad*delta*np.sqrt(-2*np.log(para.Prob_th)))
+        return pmin
+
+
+    def deal_each_bs(self,bs_id,SCR):
+        # self.BSs[bs_id].user_set.append(self.k)
+        pmin=self.get_pmin(SCR,bs_id)
+        power=pmin
+        flag=1
+        if pmin>para.p_max[self.k]:
+            self.done=True
+            flag=0
+            pass
+        self.BSs[bs_id].UDs.append([int(self.k),int(10*SCR),pmin])
+
+        # lar_fad = self.BSs[bs_id].large_h[self.k]
+        sinr = power* self.BSs[bs_id].H[self.k] / (self.BSs[bs_id].interference + para.N0*self.BSs[bs_id].W)
+        sinr_dB = 10 * np.log10(sinr)
         td=para.d0/(self.BSs[bs_id].W*np.log2(1+sinr))
-        Succe_Prob=para.Succe_Prob(power,SCR,lar_fad,self.BSs[bs_id].W,self.BSs[bs_id].interference)
+        # Succe_Prob=para.Succe_Prob(power,SCR,lar_fad,self.BSs[bs_id].W,self.BSs[bs_id].interference)
         self.BSs[bs_id].interference +=power*self.BSs[bs_id].large_h[self.k]*self.BSs[bs_id].small_h[self.k]
-        reward=ACC*Succe_Prob
-        return reward
+        # 做拟合了
+        scr_int=int(SCR*10)
+        ACC=fitting.fitting_func2(scr_int, sinr_dB)
+        if flag==0:
+            ACC=0
+        return ACC
 
     def step(self,action):
         #  一个大时隙里，模拟很多次用户请求 Reward设置为：成功1-时延；失败0
         # 模拟用户请求
-        rewards=[]
         # 先确定选哪个BS
-        first_column = action[:, 0]
-        # max_value = np.max(first_column)
-        max_BS= np.argmax(first_column) # 找到最大值所在的行索引
-        reward=self.deal_each_bs(max_BS,action[max_BS,1],action[max_BS,2])
-        rewards=[reward/para.N]*para.N
+        BS_id = action[0]
+        SCR=(action[1]+1)/10  #0.1，0.2,1
+        reward=self.deal_each_bs(BS_id,SCR)
         self.k+=1
-        next_obs=[]
+        # ACC_s = None
         if self.k==para.K:
-            self.done=[1.0,1.,1.]
-        for i in range(para.N):
-            each_obs=self.BSs[i].get_ini_obs(self.k)
-            next_obs.append(each_obs)
-        return next_obs, rewards, self.done, None
+            self.done=True
+            next_obs=np.zeros(para.state_dim)
 
+        else:
+            next_obs=self.get_all_obs(self.k)
+        if self.done:
+            for n in range(para.N):
+                self.BSs[n].UDs=np.array(self.BSs[n].UDs)
+                if self.BSs[n].UDs.size==0:
+                    continue
+                ps,ACC_s=self.BSs[n].get_power()
+                UDs= self.BSs[n].UDs[:,0].astype(int)
+                for i,k in enumerate(UDs):
+                    self.ACCs[k]=ACC_s[i]
+                    self.final_ps[k]=ps[i]
+        return next_obs, reward, self.done, self.ACCs
 
 
 if __name__ == '__main__':

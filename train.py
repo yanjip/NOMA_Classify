@@ -1,32 +1,35 @@
-# time: 2024/9/29 21:03
+# time: 2023/10/30 14:57
 # author: YanJP
+# import numpy as np
 import torch
-import numpy as np
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 import argparse
-
+import os
 import para
 from normalization import Normalization, RewardScaling
-from replay_buffer import ReplayBuffer
-from mappo_model import MAPPO_agent
+from replaybuffer import ReplayBuffer
+# from ppo_discrete import PPO_discrete,HPPO
+# from ppo_continuous import PPO_continuous
+from ppo_discrete_multi_actions import PPO_discrete
 import envs
 from tqdm import tqdm
-import datetime
 from Draw_pic import *
-import os
+import time
+# from baseline import *
+seed = para.seed
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+random.seed(seed)
+np.random.seed(seed)
 import pickle
-
-def get_file_model(folder_path = "runs/model/"):
-    # folder_path = "runs/model/"  # 需要修改成你想要操作的文件夹路径
-    file_list = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
-    sorted_files = sorted(file_list, key=lambda x: os.path.getmtime(os.path.join(folder_path, x)), reverse=True)
-    latest_file = sorted_files[0]
-    return latest_file
-
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
 def save_state_norm(state_norm):
     filepath="runs/model/state_norm/"+curr_time+'state_norm.pkl'
     with open(filepath, 'wb') as file:
         pickle.dump(state_norm, file)
+
 def load_state_norm():
     file=get_file_model(folder_path="runs/model/state_norm")
     file = "runs/model/state_norm/" + file
@@ -34,195 +37,193 @@ def load_state_norm():
         s_n = pickle.load(file_name)
     return s_n
 
-class Runner_MAPPO_MPE:
-    def __init__(self, args, env_name, number, seed):
-        self.args = args
-        self.env_name = env_name
-        self.number = number
-        self.seed = seed
-        # Set random seed
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        # Create env
-        self.env = envs.env_() # Discrete action space
-        self.args.N = self.env.n  # The number of agents
-        self.args.obs_dim_n = [self.env.observation_space for i in range(self.args.N)]  # obs dimensions of N agents
-        self.args.action_dim_n = [self.env.action_space for i in range(self.args.N)]  # actions dimensions of N agents
-        # Only for homogenous agents environments like Spread in MPE,all agents have the same dimension of observation space and action space
-        self.args.obs_dim = self.args.obs_dim_n[0]  # The dimensions of an agent's observation space
-        self.args.action_dim = self.args.action_dim_n[0]  # The dimensions of an agent's action space
-        self.args.state_dim = np.sum(self.args.obs_dim_n)  # The dimensions of global state space（Sum of the dimensions of the local observation space of all agents）
-        self.state_norm = Normalization(shape=para.state_dim)  # Trick 2:state normalization
 
-        print("observation_space=", self.env.observation_space)
-        print("obs_dim_n={}".format(self.args.obs_dim_n))
-        print("action_space=", self.env.action_space)
-        print("action_dim_n={}".format(self.args.action_dim_n))
 
-        # Create N agents
-        self.agent_n = MAPPO_agent(self.args)
-        self.replay_buffer = ReplayBuffer(self.args)
+def write_power(powers,evaluate_o,powersum,T_delay,snr):
+    with open('runs/res.txt', 'a+') as F:
+        F.write(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())) + '\n')
+        F.write("PowerSum:" + str(powersum) + "       power_list:" + str(powers) + "\n")
+        F.write("Compress ratio:"+str(evaluate_o)+"\n")
+        F.write("T_delay:" + str(T_delay) + "\n")
+        F.write("SNR_dB:" + str(snr) + "\n\n")
 
-        # Create a tensorboard
-        # self.writer = SummaryWriter(log_dir='runs/MAPPO/MAPPO_env_{}_number_{}_seed_{}'.format(self.env_name, self.number, self.seed))
+def get_file_model(folder_path = "runs/model/"):
+    # folder_path = "runs/model/"  # 需要修改成你想要操作的文件夹路径
+    folder_u=folder_path
+    file_list = [f for f in os.listdir(folder_u) if os.path.isfile(os.path.join(folder_u, f))]
+    sorted_files = sorted(file_list, key=lambda x: os.path.getmtime(os.path.join(folder_u, x)), reverse=True)
+    up_file = sorted_files[0]
 
-        self.evaluate_rewards = []  # Record the rewards during the evaluating
-        self.total_steps = 0
-        if self.args.use_reward_norm:
-            print("------use reward norm------")
-            self.reward_norm = Normalization(shape=self.args.N)
-        elif self.args.use_reward_scaling:
-            print("------use reward scaling------")
-            self.reward_scaling = RewardScaling(shape=self.args.N, gamma=self.args.gamma)
-
-    def norm_state(self, obs):
-        res = []
-        for o in obs:
-            nor_o = self.state_norm(o)
-            res.append(nor_o)
-        return res
-    def run(self, time):
-        rewards = []
-        ma_rewards = []  # 记录所有回合的滑动平均奖励
-        evaluate_num = -1  # Record the number of evaluations
-        for total_steps in tqdm(range(1, args.max_train_steps + 1)):
-            # while self.total_steps < self.args.max_train_steps:
-            if total_steps % self.args.evaluate_freq == 0:
-                # self.evaluate_policy()  # Evaluate the policy every 'evaluate_freq' steps
-                evaluate_num += 1
-            #-------------每个eposide-----------------
-            ep_reward, episode_steps = self.run_episode_mpe(evaluate=False)  # Run an episode
-
-            if total_steps%20==0:
-                print("ep_reward:", ep_reward)
-            rewards.append(ep_reward)
-            if ma_rewards:
-                ma_rewards.append(0.9 * ma_rewards[-1] + 0.1 * ep_reward)
+    return up_file
+def main(args, time, seed):
+    env = envs.env_()
+    # env_evaluate = envs.env_()
+    args.state_dim = env.observation_space
+    args.action_dim = para.action_dim
+    args.max_episode_steps = env._max_episode_steps  # Maximum number of steps per episode
+    # print("env={}".format(env_name))
+    print("state_dim={}".format(args.state_dim))
+    print("action_dim={}".format(args.action_dim))
+    print("max_episode_steps={}".format(args.max_episode_steps))
+    replay_buffer = ReplayBuffer(args)
+    rewards=[]
+    PA_post_rewards=[]
+    PA_post_ma_rewards = []
+    ma_rewards = []  # 记录所有回合的滑动平均奖励
+    agent=PPO_discrete(args)
+    state_norm = Normalization(shape=args.state_dim)  # Trick 2:state normalization
+    if args.use_reward_norm:  # Trick 3:reward normalization
+        reward_norm = Normalization(shape=1)
+    for total_steps in tqdm(range(1,args.max_train_steps+1)):
+        s = env.reset()
+        if args.use_state_norm:
+            s = state_norm(s)
+        episode_steps = 0
+        done = False
+        episode_rewards = []
+        # PA_post_reward=[]
+        while not done:
+            episode_steps += 1
+            a, a_logprob = agent.choose_action(s)  # Action and the corresponding log probability
+            s_, r, done, info = env.step(a)
+            episode_rewards.append(r)
+            if args.use_state_norm:
+                s_ = state_norm(s_)
+            # When dead or win or reaching the max_episode_steps, done will be Ture, we need to distinguish them;
+            # dw means dead or win,there is no next state s';
+            # but when reaching the max_episode_steps,there is a next state s' actually.
+            if done and episode_steps != args.max_episode_steps:
+                dw = True
             else:
-                ma_rewards.append(ep_reward)
+                dw = False
+            # Take the 'action'，but store the original 'a'（especially for Beta）
+            replay_buffer.store(s, a, a_logprob, r, s_, dw, done)
+            if sum(info)!=0:
+                replay_buffer.update_r(info)
+            s = s_
+            total_steps += 1
+            # When the number of transitions in buffer reaches batch_size,then update
+            if replay_buffer.count == args.batch_size:
+                agent.update(replay_buffer, total_steps)
+                replay_buffer.count = 0
+            #     # Evaluate the policy every 'evaluate_freq' steps
+            #     if total_steps % args.evaluate_freq == 0:
+            #         evaluate_num += 1
+            #         evaluate_reward = evaluate_policy(args, env_evaluate, agent, state_norm)
+            #         evaluate_rewards.append(evaluate_reward)
+            #         print("evaluate_num:{} \t evaluate_reward:{} \t".format(evaluate_num, evaluate_reward))
+        ep_reward=sum(episode_rewards)
+        PA_post_reward=sum(info)
+        print("ep_PA_post_reward:",PA_post_reward)
+        # print("ep_reward:",ep_reward)
 
-            if self.replay_buffer.episode_num == self.args.batch_size:
-                self.agent_n.train(self.replay_buffer, total_steps)  # Training
-                self.replay_buffer.reset_buffer()
+        rewards.append(ep_reward)
+        PA_post_rewards.append(PA_post_reward)
+        # if ma_rewards:
+        #     ma_rewards.append(0.9 * ma_rewards[-1] + 0.1 * ep_reward)
+        # else:
+        #     ma_rewards.append(ep_reward)
+    agent.savemodel(time)
+    return {'episodes': range(len(rewards)), 'rewards': rewards, 'PA_post_rewards': PA_post_rewards}
+def evaluate_policy( env, agent):
+    times = 1
+    evaluate_reward = 0
+    for _ in range(times):
+        s  = env.reset()
+        episode_steps = 0
+        done = False
+        episode_rewards = []
+        PA_post_episode_rewards=[]
+        while not done:
+            episode_steps += 1
+            a, a_logprob = agent.choose_action(s)  # Action and the corresponding log probability
+            s_, r, done, info = env.step(a)
+            s = s_
+            episode_rewards.append(r)
+            if sum(info)!=0:
+                PA_post_episode_rewards=info
+        print("ACC:{}",episode_rewards)
+        print("PA_post_ACC:",PA_post_episode_rewards)
+        ACC,PA_post_ACC=sum(episode_rewards)/(para.K),sum(PA_post_episode_rewards)/(para.K)
+        # print("ACC:",ACC)
+        # print("PA_post_ACC:",PA_post_ACC)
 
-        # self.evaluate_policy()
-        path = 'runs/model/ppo_' + time + '.pth'
-        torch.save(self.agent_n.actor.state_dict(), path)
-        # self.agent_n.save_model(self.env_name, self.number, self.seed, self.total_steps)
-        save_state_norm(self.state_norm)
-        return {'episodes': range(len(rewards)), 'rewards': rewards, 'ma_rewards': ma_rewards}
+    return ACC,PA_post_ACC,env.final_ps
+def test(args):
+    env = envs.env_()
+    args.state_dim = env.observation_space
+    args.action_dim = para.action_dim
+    args.max_episode_steps = env._max_episode_steps  # Maximum number of steps per episode
+    evaluate_num = 0  # Record the number of evaluations
 
+    agent = PPO_discrete(args)
+    model_ = get_file_model()
+    path1 = 'runs/model/' + model_
+    agent.load_model(path1)
+    # start = time.perf_counter()
+    ACCs=0
+    PA_post_ACCs=0
+    for total_steps in range(1,args.max_test_steps+1):
+        Accs,PA_post_ACC, evaluate_power = evaluate_policy(  env, agent)
+        print("num:{} \t ACC:{} \t PA_post_ACC:{} ".format(total_steps, Accs, PA_post_ACC))
+        ACCs+=Accs
+        PA_post_ACCs+=PA_post_ACC
+    # end = time.perf_counter()  # 记录结束时间
+    # duration = end - start  # 计算运行时间
+    # print("程序运行时间为：", duration)
+    final_test_acc=ACCs/args.max_test_steps
+    final_PA_post_test_acc=PA_post_ACCs/args.max_test_steps
+    print("final_test_acc:",final_test_acc)
+    print("final_PA_post_test_acc:",final_PA_post_test_acc)
 
-    def evaluate_policy(self, ):
-        evaluate_reward = 0
-        for _ in range(self.args.evaluate_times):
-            episode_reward, _ = self.run_episode_mpe(evaluate=True)
-            evaluate_reward += episode_reward
+    return final_test_acc,final_PA_post_test_acc
+        # ep_reward=sum(episode_rewards)
+        # print("ep_reward:",ep_reward)
+        # rewards.append(ep_reward)
 
-        evaluate_reward = evaluate_reward / self.args.evaluate_times
-        self.evaluate_rewards.append(evaluate_reward)
-        print("total_steps:{} \t evaluate_reward:{}".format(self.total_steps, evaluate_reward))
-        # self.writer.add_scalar('evaluate_step_rewards_{}'.format(self.env_name), evaluate_reward, global_step=self.total_steps)
-        # Save the rewards and models
-        # np.save('./data_train/MAPPO_env_{}_number_{}_seed_{}.npy'.format(self.env_name, self.number, self.seed), np.array(self.evaluate_rewards))
-        # self.agent_n.save_model(self.env_name, self.number, self.seed, self.total_steps)
-
-    def run_episode_mpe(self, evaluate=False):
-        episode_reward = 0
-        obs_n = self.env.reset() #[[...], [....],   ] 都是列表
-        # obs_n=self.norm_state(obs_n)
-        if self.args.use_reward_scaling:
-            self.reward_scaling.reset()
-        if self.args.use_rnn:  # If use RNN, before the beginning of each episode，reset the rnn_hidden of the Q network.
-            self.agent_n.actor.rnn_hidden = None
-            self.agent_n.critic.rnn_hidden = None
-        done_n=False
-        episode_step = -1
-        episode_rewards=[]
-        for k in range(para.K):
-            episode_step += 1
-            parameter_action, raw_act, parameter_logp_t = self.agent_n.choose_action(obs_n, evaluate=evaluate)  # Get actions and the corresponding log probabilities of N agents
-            s = np.array(obs_n).flatten()  # In MPE, global state is the concatenation of all agents' local obs.
-            v_n = self.agent_n.get_value(s)  # Get the state values (V(s)) of N agents
-            obs_next_n, r_n, done_n, _ = self.env.step(parameter_action)
-            episode_reward += sum(r_n)   #reward也是相同的三个值
-            # obs_next_n = self.norm_state(obs_next_n)
-
-            if not evaluate:
-                if self.args.use_reward_norm:
-                    r_n = self.reward_norm(r_n)
-                elif args.use_reward_scaling:
-                    r_n = self.reward_scaling(r_n)
-
-                # Store the transition
-                self.replay_buffer.store_transition(episode_step, obs_n, s, v_n, a_n, a_logprob_n, r_n, done_n)
-
-            obs_n = obs_next_n
-            if all(done_n):
-                break
-
-        if not evaluate:
-            # An episode is over, store v_n in the last step
-            s = np.array(obs_n).flatten()
-            v_n = self.agent_n.get_value(s)
-            self.replay_buffer.store_last_value(episode_step + 1, v_n)
-
-        return episode_reward, episode_step + 1
-    def test(self,):
-        model = get_file_model()
-        path = 'runs/model/' + model
-        self.agent_n.load_model(path)
-        self.state_norm=load_state_norm()
-        all_r=[]
-        for i in range(1, 30):
-            #-------------每个eposide-----------------
-            ep_reward, episode_steps = self.run_episode_mpe(evaluate=True)  # Run an episode
-            print("ep_reward:", ep_reward)
-            all_r.append(ep_reward)
-        print("avg_ep_reward:", sum(all_r)/len(all_r))
-        return sum(all_r)/len(all_r)
-
+def test_ppo():
+    Nc=np.array([150,160,170,180,190,200])-60
+    for i,nc in enumerate(Nc):
+        para.N_c=nc
+        ppo = test(args)
+        print(ppo)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser("Hyperparameters Setting for MAPPO in MPE environment")
-    parser.add_argument("--max_train_steps", type=int, default=int(2.5e3), help=" Maximum number of training steps")
-    parser.add_argument("--episode_limit", type=int, default=para.K, help="Maximum number of steps per episode")
-    parser.add_argument("--evaluate_freq", type=float, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
-    parser.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
-
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size (the number of episodes)")
-    parser.add_argument("--mini_batch_size", type=int, default=8, help="Minibatch size (the number of episodes)")
-    parser.add_argument("--rnn_hidden_dim", type=int, default=64, help="The number of neurons in hidden layers of the rnn")
-    parser.add_argument("--mlp_hidden_dim", type=int, default=64, help="The number of neurons in hidden layers of the mlp")
-    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
-    parser.add_argument("--gamma", type=float, default=0.95, help="Discount factor")
+    parser = argparse.ArgumentParser("Hyperparameter Setting for PPO-discrete")
+    parser.add_argument("--max_train_steps", type=int, default=int(5.0e3), help=" Maximum number of training steps")
+    parser.add_argument("--max_test_steps", type=int, default=int(3), help=" Maximum number of training steps")
+    parser.add_argument("--evaluate_freq", type=float, default=10, help="Evaluate the policy every 'evaluate_freq' steps")
+    parser.add_argument("--policy_dist", type=str, default="Gaussian", help="Beta or Gaussian")
+    parser.add_argument("--save_freq", type=int, default=20, help="Save frequency")
+    parser.add_argument("--batch_size", type=int, default=2048, help="Batch size") #2048
+    parser.add_argument("--mini_batch_size", type=int, default=64, help="Minibatch size")
+    parser.add_argument("--hidden_width", type=int, default=256, help="The number of neurons in hidden layers of the neural network")
+    parser.add_argument("--lr_a", type=float, default=3e-4, help="Learning rate of actor")  # 3e-5
+    parser.add_argument("--lr_c", type=float, default=1e-5, help="Learning rate of critic")
+    parser.add_argument("--gamma", type=float, default=0.98, help="Discount factor")
     parser.add_argument("--lamda", type=float, default=0.95, help="GAE parameter")
-    parser.add_argument("--epsilon", type=float, default=0.2, help="GAE parameter")
-    parser.add_argument("--K_epochs", type=int, default=15, help="GAE parameter")
-    parser.add_argument("--use_adv_norm", type=bool, default=False, help="Trick 1:advantage normalization")
-    parser.add_argument("--use_state_norm", type=bool, default=True, help="Trick 2:state normalization")
+    parser.add_argument("--epsilon", type=float, default=0.1, help="PPO clip parameter")
+    parser.add_argument("--K_epochs", type=int, default=10, help="PPO parameter")
+    parser.add_argument("--use_adv_norm", type=bool, default=True, help="Trick 1:advantage normalization")
+    parser.add_argument("--use_state_norm", type=bool, default=False, help="Trick 2:state normalization")
     parser.add_argument("--use_reward_norm", type=bool, default=False, help="Trick 3:reward normalization")
-    parser.add_argument("--use_reward_scaling", type=bool, default=False, help="Trick 4:reward scaling. Here, we do not use it.")
-    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Trick 5: policy entropy")
+    parser.add_argument("--use_reward_scaling", type=bool, default=False, help="Trick 4:reward scaling")
+    parser.add_argument("--entropy_coef", type=float, default=0.04, help="Trick 5: policy entropy")
     parser.add_argument("--use_lr_decay", type=bool, default=True, help="Trick 6:learning rate Decay")
     parser.add_argument("--use_grad_clip", type=bool, default=True, help="Trick 7: Gradient clip")
     parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Trick 8: orthogonal initialization")
     parser.add_argument("--set_adam_eps", type=float, default=True, help="Trick 9: set Adam epsilon=1e-5")
-    parser.add_argument("--use_relu", type=float, default=False, help="Whether to use relu, if False, we will use tanh")
-    parser.add_argument("--use_rnn", type=bool, default=False, help="Whether to use RNN")
-    parser.add_argument("--add_agent_id", type=float, default=False, help="Whether to add agent_id. Here, we do not use it.")
-    parser.add_argument("--use_value_clip", type=float, default=False, help="Whether to use value clip.")
+    parser.add_argument("--use_tanh", type=float, default=True, help="Trick 10: tanh activation function")
 
     args = parser.parse_args()
-    runner = Runner_MAPPO_MPE(args, env_name="simple_spread", number=1, seed=52000)
     curr_time = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
     train=True
     # train=False
+    train_log_dir='runs/rewards/'+curr_time
     if train:
-        res_dic=runner.run(curr_time)
-
-        train_log_dir='runs/reward/'+curr_time
-        np.save(train_log_dir + '_reward.npy', np.array(res_dic['rewards']))
-        plot_rewards(res_dic['rewards'], curr_time, path='runs/pic')
+        res_dic=main(args, curr_time, seed=seed)
+        np.save(train_log_dir + '_reward.npy', np.array([res_dic['rewards'],res_dic['PA_post_rewards']])/para.K)
+        plot_rewards(np.array(res_dic['rewards'])/para.K,np.array(res_dic['PA_post_rewards'])/para.K,curr_time,path='runs/pic')
     else:
-        runner.test()
+        test(args)
+

@@ -1,5 +1,3 @@
-# time: 2023/10/30 18:09
-# author: YanJP
 import numpy as np
 
 

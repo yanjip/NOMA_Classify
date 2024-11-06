@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 
+import para
+
 
 class ReplayBuffer:
     def __init__(self, args):
@@ -18,8 +20,8 @@ class ReplayBuffer:
         self.buffer = {'obs_n': np.empty([self.batch_size, self.episode_limit, self.N, self.obs_dim]),
                        's': np.empty([self.batch_size, self.episode_limit, self.state_dim]),
                        'v_n': np.empty([self.batch_size, self.episode_limit + 1, self.N]),
-                       'a_n': np.empty([self.batch_size, self.episode_limit, self.N]),
-                       'a_logprob_n': np.empty([self.batch_size, self.episode_limit, self.N]),
+                       'a_n': np.empty([self.batch_size, self.episode_limit, self.N,para.action_dim]),
+                       'a_logprob_n': np.empty([self.batch_size, self.episode_limit, self.N*para.action_dim]),
                        'r_n': np.empty([self.batch_size, self.episode_limit, self.N]),
                        'done_n': np.empty([self.batch_size, self.episode_limit, self.N])
                        }
@@ -30,7 +32,7 @@ class ReplayBuffer:
         self.buffer['s'][self.episode_num][episode_step] = s
         self.buffer['v_n'][self.episode_num][episode_step] = v_n
         self.buffer['a_n'][self.episode_num][episode_step] = a_n
-        self.buffer['a_logprob_n'][self.episode_num][episode_step] = a_logprob_n
+        self.buffer['a_logprob_n'][self.episode_num][episode_step] = a_logprob_n.flatten()
         self.buffer['r_n'][self.episode_num][episode_step] = r_n
         self.buffer['done_n'][self.episode_num][episode_step] = done_n
 
