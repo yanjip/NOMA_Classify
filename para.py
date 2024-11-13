@@ -3,13 +3,14 @@
 import numpy as np
 KHz=1e3
 MHz=1e6
-seed=10
+seed=140  #21330  593  140
 np.random.seed(seed)
 N=4 # 基站数量
-K=16 # 用户数量
+K=12 # 用户数量  16
 p_max=np.maximum(0.1,np.random.normal(0.1,2,K))
 max_action=1
 Ws=np.random.choice(np.array([1,2,3,4,5])+4,size=N)*MHz
+# Ws=np.random.choice(np.array([3,3,3,3,3])+2,size=N)*MHz
 
 state_dim =2*N    # 所有基站对用户k的信道增益、 interference
 action_dim=2   # 功率、调度决策、SCR
@@ -41,17 +42,18 @@ def Succe_Prob(power,ratio,lar_fad,W,interfence):
 
 a=1.8
 
+W = 1.5 * MHz
 
-# def ini_video():
-#     videos_c=[]
-#     for i in range(3):
-#         video_cache = np.random.choice(np.arange(num_videos), size=cachelen, replace=False)
-#         videos_c.append(video_cache)
-#     all_video_hot = get_hot_zipf()
-#
-#     return videos_c,all_video_hot
-#
-# videos_c,all_video_hot=ini_video()
+PA_converg=[]
+
+def get_probability(power,ratio,lar_fad):
+    phy=d0/(W*0.10)
+    # xi=power/(N0_dBm*W)
+    xi=power*lar_fad/(N0*W)
+    delta=1
+    x = (2 ** (phy * ratio) - 1) / (xi * delta)
+    prob = np.exp(-x ** 2 / 2)
+    return prob
 
 train=True
 test_times=40

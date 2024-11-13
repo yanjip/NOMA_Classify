@@ -14,7 +14,7 @@ def get_probability(power,ratio,lar_fad,W):
     return prob
 
 
-# Baseline 2: alpha按照信道强度；SCR选择最小的；功率最大；
+# Baseline 2: alpha固定一个BS；SCR选择最小的；功率最小；
 class Baseline2:
     def __init__(self, ):
         self.BSs= [Basestation(i) for i in range(para.N)]
@@ -22,10 +22,24 @@ class Baseline2:
         self.scr=0.1
         self.ACCs=np.zeros(para.K)
         # self.get_acc()
+    def get_pmin(self,SCR,bs_id,k):
+        lar_fad = self.BSs[bs_id].large_h[k]
+        delta = 1
+        interfence_k=self.BSs[bs_id].interference+para.N0*self.BSs[bs_id].W
+        phy_k = para.d0 / (self.BSs[bs_id].W * para.t_max)
+        pmin=interfence_k*(2**(phy_k*SCR)-1)/(lar_fad*delta*np.sqrt(-2*np.log(para.Prob_th)))
+        return pmin
     def get_acc(self,):
         for k in range(para.K):
-            BS_id=int(np.argmax(self.Hks[:,k], axis=0))
-            # pmin = self.get_pmin(self.scr, BS_id,k)
+            # BS_id=int(np.argmax(self.Hks[:,k], axis=0))
+            # BS_id=np.random.randint(0,para.N)
+            BS_id =2
+            pmin = self.get_pmin(self.scr, BS_id,k)
+            if pmin > para.p_max[k]:
+                #     self.scr-=0.1
+                # if self.scr==0.0:
+                continue
+            power = pmin
             power=para.p_max[k]
             sinr = power * self.BSs[BS_id].H[k] / (self.BSs[BS_id].interference + para.N0 * self.BSs[BS_id].W)
             sinr_dB = 10 * np.log10(sinr)
@@ -74,7 +88,7 @@ class Baseline3:
             self.BSs[BS_id].interference +=power*self.BSs[BS_id].large_h[k]*self.BSs[BS_id].small_h[k]
         return self.ACCs.mean()
 
-# Baseline 4: alpha按信道最大；SCR选择遍历；功率随机；
+# Baseline 4: alpha按信道最大；SCR选择遍历；功率最大；
 class Baseline4:
     def __init__(self, ):
         self.BSs= [Basestation(i) for i in range(para.N)]
@@ -92,17 +106,22 @@ class Baseline4:
         return pmin
     def get_acc(self,):
         for k in range(para.K):
-            # BS_id=np.random.randint(0,para.N)
-            BS_id=int(np.argmax(self.Hks[:,k], axis=0))
+            BS_id=np.random.randint(0,para.N)
+            # BS_id=int(np.argmax(self.Hks[:,k], axis=0))
             pmin = self.get_pmin(self.scr[k], BS_id,k)
             # power=para.p_max[k]
-            # if pmin > para.p_max[k]:
-            #     continue
             if pmin > para.p_max[k]:
-                self.scr[k]-=0.1
-            if self.scr[k]==0.0:
                 continue
-            power=np.random.uniform(pmin, para.p_max[k])
+            # while pmin > para.p_max[k]:
+            # if pmin > para.p_max[k]:
+            #     self.scr[k]-=0.1
+            #     pmin = self.get_pmin(self.scr[k], BS_id,k)
+            #
+            # if self.scr[k]==0.0:
+            #     continue
+            # power=np.random.uniform(pmin, para.p_max[k])
+            # power=para.p_max[k]
+            power=pmin
             sinr = power * self.BSs[BS_id].H[k] / (self.BSs[BS_id].interference + para.N0 * self.BSs[BS_id].W)
             sinr_dB = 10 * np.log10(sinr)
             scr_int = int(self.scr[k] * 10)

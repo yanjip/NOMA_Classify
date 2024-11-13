@@ -61,7 +61,8 @@ class env_():
     def reset(self,):
         self.k=0
         self.done=False
-        reset_env()
+        # 训练的时候加上下面这个
+        # reset_env()
         self.BSs= [Basestation(i) for i in range(para.N)]
 
         # for n in range(para.N):

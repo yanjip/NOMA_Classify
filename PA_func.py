@@ -116,4 +116,7 @@ if __name__ == '__main__':
 
     print("max power:",upper_bounds)
 
+    ans=[]
+
+
 
